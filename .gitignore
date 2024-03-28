@@ -1,2 +1,6 @@
 /bin
+/conviva_prometheus_exporter
+
+# Configs
 /.env
+.env-*

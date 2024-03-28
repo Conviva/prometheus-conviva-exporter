@@ -1,0 +1,37 @@
+version: '3.9'
+
+networks:
+  default:
+    name: conviva-prometheus
+    driver: bridge
+
+services:
+
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - "./prometheus-config.yml:/etc/prometheus/prometheus.yml"
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    depends_on:
+      conviva-prometheus-exporter:
+        condition: service_started
+
+  # Conviva Exporter
+  conviva-prometheus-exporter:
+    container_name: conviva-prometheus-exporter
+    build:
+      context: ./
+      dockerfile: ./Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - CONVIVA_BASE_URL
+      - CONVIVA_API_VERSION
+      - CONVIVA_CLIENT_ID
+      - CONVIVA_CLIENT_SECRET
+      - CONVIVA_FILTER_ID
+      - CONVIVA_DIMENSION_NAME
+

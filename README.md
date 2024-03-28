@@ -10,11 +10,11 @@ The recommended scrape interval is 60s.
 ENV Variable | Description | Example
 ----- | ----- | -----
 CONVIVA_BASE_URL | Conviva API domain | https://api.conviva.com
-CONVIVA_API_VERSION | Insights API version | 2.6
+CONVIVA_API_VERSION | Insights API version | 3.0
 CONVIVA_CLIENT_ID | API Client ID. You can get your Conviva Client ID and Secret at: https://pulse.conviva.com/app/admin/apps/list
 CONVIVA_CLIENT_SECRET | API Client Secret
-CONVIVA_FILTER_IDS | Comma-separated list of filter IDs. Filters can be created in Pulse and Filter IDs can be obtained from /insights/2.6/filters.json | 1234,5678
-CONVIVA_DIMENSION_ID | Single dimension ID. Available dimension IDs can be obtained from /insights/2.6/metriclens_dimension_list.json | 12345
+CONVIVA_FILTER_ID | Filter IDs. Filters can be created in Pulse and Filter IDs can be obtained from /insights/3.0/filters.json | 1234
+CONVIVA_DIMENSION_NAME | Dimension name. Available dimension IDs can be obtained from /insights/3.0/metrics/_meta/references/dimensions | player-name
 
 ### Docker
 Build container
@@ -27,5 +27,12 @@ Run
 docker run --env-file ./.env -dp 8080:8080 conviva-prometheus-exporter
 ```
 
-### Limitations
-Ad metrics are currently not available
+### Docker Compose
+Run Prometheus and Conviva Experience Insights Prometheus Exporter
+```
+docker compose up -d
+```
+Stop
+```
+docker compose down
+```

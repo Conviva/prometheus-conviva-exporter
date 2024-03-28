@@ -4,7 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"flag"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -33,73 +33,80 @@ var (
 		"Indicates if the scrape is successful. 1=Success, 0=Fail", nil, nil,
 	)
 
-	metricDescriptions = []*prometheus.Desc{
-		prometheus.NewDesc(
+	// See https://developer.conviva.com/docs/metrics-api-v3/84ff2dc99dfeb-metrics for full list of metrics
+	metrics = [10]string{
+		"attempts",
+		"video-start-failures",
+		"exit-before-video-starts",
+		"plays",
+		"video-start-time",
+		"rebuffering-ratio",
+		"bitrate",
+		"video-playback-failures",
+		"ended-plays",
+		"connection-induced-rebuffering-ratio",
+	}
+
+	metricDescriptions = map[string]*prometheus.Desc{
+		"attempts": prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "", "attempts"),
 			"Attempts counts all attempts to play a video which are initiated when a viewer clicks play or a video auto-plays.", variableLabels, nil,
 		),
-		prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "video_start_failures"),
-			"Video Start Failures (VSF) measures how often Attempts terminated during video startup before the first video frame was played, and a fatal error was reported.", variableLabels, nil,
-		),
-		prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "exits_before_video_start"),
-			"Exits Before Video Start (EBVS) measures the Attempts that terminated before the video started, without a reported fatal error.", variableLabels, nil,
-		),
-		prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "plays"),
-			"Plays (Successful Attempts) is counted when the viewer sees the first frame of video.", variableLabels, nil,
-		),
-		prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "video_start_time"),
-			"Video Startup Time (VST) is the number of seconds between when the user clicks play or video auto-starts and when the first frame of a video is rendered.", variableLabels, nil,
-		),
-		prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "rebuffering_ratio"),
-			"Rebuffering Ratio measures the percentage of total video viewing time (playTime + rebufferingTime) during which viewers experienced rebuffering.", variableLabels, nil,
-		),
-		prometheus.NewDesc(
+		"bitrate": prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "", "average_bitrate"),
 			"Average bitrate calculates the bits played by the player. The bits played do not include bits in buffering or bits passed during paused video.", variableLabels, nil,
 		),
-		prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "video_playback_failures"),
-			"Video playback failure occurs when video play terminates due to a playback error, such as video file corruption, insufficient streaming resources, or a sudden interruption in the video stream.", variableLabels, nil,
-		),
-		prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "ended_plays"),
-			"An ended play is a play that ended during the selected interval. To count as an ended play, the viewing session must have at least one video frame that was viewed.", variableLabels, nil,
-		),
-		prometheus.NewDesc(
+		"connection_induced_rebuffering_ratio": prometheus.NewDesc(
 			prometheus.BuildFQName(namespace, "", "connection_induced_rebuffering_ratio"),
 			"Connection Induced Rebuffering Ratio (CIRR) measures the percentage of total video viewing time (playTime plus all rebuffering) during which viewers experienced nonseek rebuffering.", variableLabels, nil,
 		),
-		prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "video_restart_time"),
-			"Video Restart Time (VRT) is the number of seconds after user-initiated seeking until video begins playing.", variableLabels, nil,
+		"ended_plays": prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "ended_plays"),
+			"An ended play is a play that ended during the selected interval. To count as an ended play, the viewing session must have at least one video frame that was viewed.", variableLabels, nil,
 		),
-		prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "video_start_failures_technical"),
-			"Video Start Failures (VSF-T) measures how often Attempts terminated during video startup before the first video frame was played, and a fatal error was reported due to a technical issue, such as prolonged buffering.", variableLabels, nil,
+		"exit_before_video_starts": prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "exits_before_video_start"),
+			"Exits Before Video Start (EBVS) measures the Attempts that terminated before the video started, without a reported fatal error.", variableLabels, nil,
 		),
-		prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "video_start_failures_business"),
-			"VSFs with at least one error message that matches the configured business errors are counted in the Video Start Failures Business (VPF-B) metric.", variableLabels, nil,
+		"plays": prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "plays"),
+			"Plays (Successful Attempts) is counted when the viewer sees the first frame of video.", variableLabels, nil,
 		),
-		prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "video_playback_failures_technical"),
-			"VPFs with errors that match the configured business errors are not counted as VPF-T, but count towards the Video Playback Failures Business (VPF-B) metric.", variableLabels, nil,
+		"rebuffering_ratio": prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "rebuffering_ratio"),
+			"Rebuffering Ratio measures the percentage of total video viewing time (playTime + rebufferingTime) during which viewers experienced rebuffering.", variableLabels, nil,
 		),
-		prometheus.NewDesc(
-			prometheus.BuildFQName(namespace, "", "video_playback_failures_business"),
-			"VPFs with at least one error message that matches the configured business errors are counted in the Video Playback Failures Business (VPF-B) metric.", variableLabels, nil,
+		"video_playback_failures": prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "video_playback_failures"),
+			"Video playback failure occurs when video play terminates due to a playback error, such as video file corruption, insufficient streaming resources, or a sudden interruption in the video stream.", variableLabels, nil,
+		),
+		"video_start_failures": prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "video_start_failures"),
+			"Video Start Failures (VSF) measures how often Attempts terminated during video startup before the first video frame was played, and a fatal error was reported.", variableLabels, nil,
+		),
+		"video_start_time": prometheus.NewDesc(
+			prometheus.BuildFQName(namespace, "", "video_start_time"),
+			"Video Startup Time (VST) is the number of seconds between when the user clicks play or video auto-starts and when the first frame of a video is rendered.", variableLabels, nil,
 		),
 	}
 )
 
+// Metric has a name and a value
+type Metric struct {
+	metricName string
+	value      float64
+}
+
+// NewDimension allocates and initializes a new Metric
+func NewMetric() *Metric {
+	metric := &Metric{}
+	return metric
+}
+
 // Dimension represents a dimension and has a list of metrics
 type Dimension struct {
-	metrics []float64
+	dimensionValue string
+	metrics        []*Metric
 }
 
 // NewDimension allocates and initializes a new Dimension
@@ -108,56 +115,41 @@ func NewDimension() *Dimension {
 	return dimension
 }
 
-// FilterTable represents a filter and keeps tables of metrics, grouped by dimensions
-type FilterTable struct {
-	filterID   string
-	dimensions []*Dimension
+// MetricsData represents the API response
+type MetricsData struct {
+	filterTitle    string
+	dimensionTitle string
+	dimensions     []*Dimension
 }
 
-// NewFilterTable allocates and initializes a new FilterTable
-func NewFilterTable(filterID string) *FilterTable {
-	filterTable := &FilterTable{
-		filterID: filterID,
-	}
-	filterTable.dimensions = make([]*Dimension, 0)
-	return filterTable
-}
-
-// QualityMetricLensData represents the API response
-type QualityMetricLensData struct {
-	filters         []*FilterTable
-	dimensionTitles []string
-}
-
-// NewQualityMetricLensData allocates and initializes a new QualityMetricLens
-func NewQualityMetricLensData() *QualityMetricLensData {
-	qualityMetriclensData := &QualityMetricLensData{}
-	qualityMetriclensData.filters = make([]*FilterTable, 0)
-	qualityMetriclensData.dimensionTitles = make([]string, 0)
+// NewMetricsData allocates and initializes a new QualityMetricLens
+func NewMetricsData() *MetricsData {
+	qualityMetriclensData := &MetricsData{}
+	qualityMetriclensData.dimensions = make([]*Dimension, 0)
 	return qualityMetriclensData
 }
 
 // Exporter is used to store metrics
 type Exporter struct {
-	convivaBaseURL, convivaAPIVersion, convivaClientID, convivaClientSecret, convivaFilterIDs, convivaDimensionID string
+	convivaBaseURL, convivaAPIVersion, convivaClientID, convivaClientSecret, convivaFilterID, convivaDimensionName string
 }
 
 // NewExporter generates a new Exporter
-func NewExporter(convivaBaseURL string, convivaAPIVersion string, convivaClientID string, convivaClientSecret string, convivaFilterIDs string, convivaDimensionID string) *Exporter {
+func NewExporter(convivaBaseURL string, convivaAPIVersion string, convivaClientID string, convivaClientSecret string, convivaFilterID string, convivaDimensionName string) *Exporter {
 	return &Exporter{
-		convivaBaseURL:      convivaBaseURL,
-		convivaAPIVersion:   convivaAPIVersion,
-		convivaClientID:     convivaClientID,
-		convivaClientSecret: convivaClientSecret,
-		convivaFilterIDs:    convivaFilterIDs,
-		convivaDimensionID:  convivaDimensionID,
+		convivaBaseURL:       convivaBaseURL,
+		convivaAPIVersion:    convivaAPIVersion,
+		convivaClientID:      convivaClientID,
+		convivaClientSecret:  convivaClientSecret,
+		convivaFilterID:      convivaFilterID,
+		convivaDimensionName: convivaDimensionName,
 	}
 }
 
 // Describe provides the Conviva metrics to prometheus.Describe
 func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
-	for i := 0; i < len(metricDescriptions); i++ {
-		ch <- metricDescriptions[i]
+	for _, desc := range metricDescriptions {
+		ch <- desc
 	}
 	ch <- exporterUp
 }
@@ -166,6 +158,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	qualityMetriclensData, err := e.getQualityMetriclens(ch)
 	if err != nil {
+		log.Println("Got error from Conviva API")
 		log.Println(err)
 		// Set flag to indicate failed scrape
 		ch <- prometheus.MustNewConstMetric(exporterUp, prometheus.GaugeValue, 0)
@@ -178,9 +171,13 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 }
 
 // GetQualitySummaryAndUpdateMetrics calls the Conviva API and updates the metrics to Prometheus
-func (e *Exporter) getQualityMetriclens(ch chan<- prometheus.Metric) (*QualityMetricLensData, error) {
-	qualityMetriclensData := NewQualityMetricLensData()
-	qualityMetriclensEndpoint := e.convivaBaseURL + "/insights/" + e.convivaAPIVersion + "/metrics.json?metrics=quality_metriclens&filter_ids=" + e.convivaFilterIDs + "&metriclens_dimension_id=" + e.convivaDimensionID
+func (e *Exporter) getQualityMetriclens(ch chan<- prometheus.Metric) (*MetricsData, error) {
+	qualityMetriclensData := NewMetricsData()
+	qualityMetriclensEndpoint := e.convivaBaseURL + "/insights/" + e.convivaAPIVersion + "/real-time-metrics/custom-selection/group-by/" + e.convivaDimensionName + "?minutes=2&granularity=PT1M&filter_id=" + e.convivaFilterID
+
+	for i := 0; i < len(metrics); i++ {
+		qualityMetriclensEndpoint += "&metric=" + metrics[i]
+	}
 
 	req, err := http.NewRequest("GET", qualityMetriclensEndpoint, nil)
 	if err != nil {
@@ -195,7 +192,7 @@ func (e *Exporter) getQualityMetriclens(ch chan<- prometheus.Metric) (*QualityMe
 		return nil, err
 	}
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
 		return nil, err
@@ -203,88 +200,103 @@ func (e *Exporter) getQualityMetriclens(ch chan<- prometheus.Metric) (*QualityMe
 
 	// Check if request failed
 	if resp.StatusCode != 200 {
-		reason, err := jsonparser.GetString(body, "reason")
+		reason, err := jsonparser.GetString(body, "name")
 		if err == nil {
 			err = errors.New("Invalid response from API. Reason: " + reason)
 		}
 		return nil, err
 	}
 
-	// Check if filter is warming up
-	isWarmingUp := false
-	jsonparser.ArrayEach(body, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
-		if err == nil {
-			isWarmingUp = true
-		}
-	}, "quality_metriclens", "meta", "filters_warmup")
-
-	if isWarmingUp {
-		err := errors.New("filter is warming up")
-		return nil, err
+	// Parse the dimension title
+	dimensionName, err := jsonparser.GetString(body, "_meta", "group_by_dimension", "description")
+	if err != nil {
+		dimensionName = "Unknown"
 	}
+	qualityMetriclensData.dimensionTitle = dimensionName
+	// Parse the filter title
+	filterId, err := jsonparser.GetString(body, "_meta", "filter_info", "id")
+	if err != nil {
+		dimensionName = "Unknown"
+	}
+	qualityMetriclensData.filterTitle = filterId
 
-	// Parse all dimension titles
-	jsonparser.ArrayEach(body, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
-		if err == nil {
-			qualityMetriclensData.dimensionTitles = append(qualityMetriclensData.dimensionTitles, string(value))
+	// For each dimension row in a filter
+	jsonparser.ArrayEach(body, func(dimensionalDataRow []byte, dataType jsonparser.ValueType, offset int, err error) {
+		if err != nil {
+			log.Fatalln("Could not get time_series[0].dimensional_data")
+			return
 		}
-	}, "quality_metriclens", "xvalues")
 
-	// For each filter, parse all the metrics
-	jsonparser.ObjectEach(body, func(key []byte, value []byte, dataType jsonparser.ValueType, offset int) error {
-		// log.Println("Key: '%s'\n Value: '%s'\n Type: %s\n", string(key), string(value), dataType)
+		dimension := NewDimension()
+		dimension.dimensionValue, err = jsonparser.GetString(dimensionalDataRow, "dimension", "value")
+		if err != nil {
+			log.Fatalln("Could not get time_series[0].dimensional_data.dimension.value")
+			return
+		}
 
-		filterID := string(key)
-		filterTable := NewFilterTable(filterID)
-
-		// For each dimension row in a filter
-		jsonparser.ArrayEach(body, func(dimensionRow []byte, dataType jsonparser.ValueType, offset int, err error) {
+		// For each metric in the dimension row
+		jsonparser.ObjectEach(dimensionalDataRow, func(metricName []byte, value []byte, dataType jsonparser.ValueType, offset int) error {
 			if err != nil {
-				return
+				log.Fatalln("Could not get time_series[0].dimensional_data.metrics")
+				return nil
 			}
-			dimension := NewDimension()
-			metricsRow := []float64{}
-			// For each metric in the dimension row
-			jsonparser.ArrayEach(dimensionRow, func(metricVal []byte, dataType jsonparser.ValueType, offset int, err error) {
-				if err != nil {
-					return
-				}
-				metricFloat, err := jsonparser.GetFloat(metricVal)
-				if err != nil {
-					return
-				}
-				metricsRow = append(metricsRow, metricFloat)
-			})
-			dimension.metrics = metricsRow
-			filterTable.dimensions = append(filterTable.dimensions, dimension)
-		}, "quality_metriclens", "tables", filterID, "rows")
 
-		qualityMetriclensData.filters = append(qualityMetriclensData.filters, filterTable)
+			metric := NewMetric()
+			metric.metricName = string(metricName)
 
-		return nil
-	}, "quality_metriclens", "tables")
+			switch metric.metricName {
+			case "attempts":
+				metric.value, err = jsonparser.GetFloat(value, "count")
+			case "bitrate":
+				bps, err := jsonparser.GetFloat(value, "bps")
+				if err != nil {
+					metric.value = bps / 1000
+				}
+			case "connection_induced_rebuffering_ratio":
+				metric.value, err = jsonparser.GetFloat(value, "ratio")
+			case "ended_plays":
+				metric.value, err = jsonparser.GetFloat(value, "count")
+			case "exit_before_video_starts":
+				metric.value, err = jsonparser.GetFloat(value, "percentage")
+			case "plays":
+				metric.value, err = jsonparser.GetFloat(value, "percentage")
+			case "rebuffering_ratio":
+				metric.value, err = jsonparser.GetFloat(value, "ratio")
+			case "video_playback_failures":
+				metric.value, err = jsonparser.GetFloat(value, "percentage")
+			case "video_start_failures":
+				metric.value, err = jsonparser.GetFloat(value, "percentage")
+			case "video_start_time":
+				metric.value, err = jsonparser.GetFloat(value, "value")
+			default:
+				break
+			}
+
+			dimension.metrics = append(dimension.metrics, metric)
+			return nil
+		}, "metrics")
+
+		// dimension.metrics = metricsRow
+		qualityMetriclensData.dimensions = append(qualityMetriclensData.dimensions, dimension)
+	}, "time_series", "[0]", "dimensional_data")
 
 	return qualityMetriclensData, nil
 }
 
 // UpdateMetrics reports all metrics to Prometheus
-func (e *Exporter) updateMetrics(ch chan<- prometheus.Metric, data *QualityMetricLensData) {
-	// Set all the metrics to Prometheus. First, iterate all filters.
-	for i := 0; i < len(data.filters); i++ {
-		filter := data.filters[i]
+func (e *Exporter) updateMetrics(ch chan<- prometheus.Metric, data *MetricsData) {
+	// Set all the metrics to Prometheus. Iterate all dimensions
+	for j := 0; j < len(data.dimensions); j++ {
+		filterTitle := data.filterTitle
+		dimension := data.dimensions[j]
 
-		// Iterate all dimensions
-		for j := 0; j < len(filter.dimensions); j++ {
-			dimensionTitle := data.dimensionTitles[j]
-			dimension := filter.dimensions[j]
-
-			// Iterate all metrics in the dimension
-			for k := 0; k < len(dimension.metrics); k++ {
-				metricValue := dimension.metrics[k]
-				ch <- prometheus.MustNewConstMetric(
-					metricDescriptions[k], prometheus.GaugeValue, metricValue, filter.filterID, dimensionTitle,
-				)
-			}
+		// Iterate all metrics in the dimension
+		for k := 0; k < len(dimension.metrics); k++ {
+			metric := dimension.metrics[k]
+			dimensionValue := dimension.dimensionValue
+			ch <- prometheus.MustNewConstMetric(
+				metricDescriptions[metric.metricName], prometheus.GaugeValue, metric.value, filterTitle, dimensionValue,
+			)
 		}
 	}
 }
@@ -301,14 +313,14 @@ func main() {
 	convivaAPIVersion := os.Getenv("CONVIVA_API_VERSION")
 	convivaClientID := os.Getenv("CONVIVA_CLIENT_ID")
 	convivaClientSecret := os.Getenv("CONVIVA_CLIENT_SECRET")
-	convivaFilterIDs := os.Getenv("CONVIVA_FILTER_IDS")
-	convivaDimensionID := os.Getenv("CONVIVA_DIMENSION_ID")
+	convivaFilterID := os.Getenv("CONVIVA_FILTER_ID")
+	convivaDimensionName := os.Getenv("CONVIVA_DIMENSION_NAME")
 
 	if convivaBaseURL == "" {
 		log.Fatal("Error loading convivaBaseURL from env variables. Exiting.")
 	}
 
-	exporter := NewExporter(convivaBaseURL, convivaAPIVersion, convivaClientID, convivaClientSecret, convivaFilterIDs, convivaDimensionID)
+	exporter := NewExporter(convivaBaseURL, convivaAPIVersion, convivaClientID, convivaClientSecret, convivaFilterID, convivaDimensionName)
 	prometheus.MustRegister(exporter)
 
 	http.Handle(*metricsPath, promhttp.Handler())
